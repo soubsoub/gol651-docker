@@ -1,0 +1,5 @@
+# The image needs only two files from the repository. Everything else
+# (including .env, data/ and student work) is excluded from the build context.
+*
+!requirements/requirements-lock.txt
+!docker/python/entrypoint.sh

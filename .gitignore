@@ -1,0 +1,24 @@
+# --- Secrets -------------------------------------------------------------------
+.env
+
+# --- Python ----------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- Jupyter / Marimo ------------------------------------------------------------
+.ipynb_checkpoints/
+__marimo__/
+
+# --- Local database files (personal data; folders kept via .gitkeep) -------------
+data/sqlite/*
+!data/sqlite/.gitkeep
+data/duckdb/*
+!data/duckdb/.gitkeep
+
+# --- Editors and operating systems -------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

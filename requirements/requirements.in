@@ -1,0 +1,64 @@
+# =============================================================================
+# GOL651 - Direct Python dependencies (Python 3.12)
+# =============================================================================
+# This file lists ONLY the packages the course uses directly.
+# The exact, reproducible environment is requirements-lock.txt, generated with:
+#
+#   uv pip compile requirements/requirements.in \
+#     --universal --python-version 3.12 \
+#     -o requirements/requirements-lock.txt
+#
+# Version policy:
+#   - lower bound = version validated at the start of the semester;
+#   - upper bound = next major version (breaking changes are excluded);
+#   - the Docker image installs requirements-lock.txt, never this file.
+# Never edit requirements-lock.txt by hand.
+# =============================================================================
+
+# --- Scientific computing and analysis ---------------------------------------
+numpy>=2.5,<3
+pandas>=3.0,<4
+scipy>=1.18,<2
+scikit-learn>=1.9,<2
+
+# --- Visualization -------------------------------------------------------------
+matplotlib>=3.11,<4
+plotly>=7.1,<8
+vega_datasets>=0.9,<1          # optional teaching datasets
+
+# --- Files and HTTP ----------------------------------------------------------
+openpyxl>=3.1,<4
+pyarrow>=26.0,<27
+requests>=2.34,<3
+httpx>=0.28,<1
+python-dotenv>=1.2,<2
+
+# --- Databases ------------------------------------------------------------
+sqlalchemy>=2.1,<3
+# [rsa] installs "cryptography", required by PyMySQL for MySQL 8.4's default
+# caching_sha2_password authentication over an unencrypted connection.
+pymysql[rsa]>=1.2,<2
+mysql-connector-python>=26.7,<27
+duckdb>=1.5,<2
+duckdb-engine>=0.17,<1
+
+# --- Validation ---------------------------------------------------------------
+pydantic>=2.14,<3
+
+# --- Optimization (HiGHS via highspy; CBC and GLPK are OS packages) -------------
+pyomo>=6.10,<7
+highspy>=1.15,<2
+
+# --- Notebooks -----------------------------------------------------------------
+jupyter>=1.1,<2
+notebook>=7.6,<8               # Notebook 7: default "classic-style" interface
+jupyterlab>=4.6,<5             # available on demand at /lab
+ipykernel>=7.4,<8
+ipywidgets>=8.1,<9
+marimo>=0.25,<1
+
+# --- Web applications and APIs -------------------------------------------------
+streamlit>=1.66,<2
+fastapi>=0.146,<1
+uvicorn[standard]>=0.54,<1
+flask>=3.1,<4

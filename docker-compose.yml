@@ -1,0 +1,225 @@
+# =============================================================================
+# GOL651 - Docker Compose environment (Stage 1)
+# =============================================================================
+# Default services   : mysql, phpmyadmin, jupyter
+#   docker compose up -d
+# Optional profiles  : marimo  -> marimo
+#                      web     -> streamlit, fastapi, flask
+#   docker compose --profile marimo up -d
+#   docker compose --profile web up -d
+#   docker compose --profile marimo --profile web up -d
+#
+# All values come from .env (copy .env.example to .env first).
+# Ports are published on BIND_ADDRESS (default 127.0.0.1 = this computer only).
+# LOCAL TEACHING ENVIRONMENT - DO NOT EXPOSE TO THE PUBLIC INTERNET.
+# =============================================================================
+
+name: gol651
+
+# -----------------------------------------------------------------------------
+# Shared definition for every Python service.
+# One image (gol651-python) is built once and reused with different commands.
+# -----------------------------------------------------------------------------
+x-python-service: &python-service
+  image: gol651-python:3.12-stage1
+  init: true                       # reaps zombie processes, forwards signals
+  working_dir: /workspace
+  environment:
+    # Inside Docker, MySQL is reached by its SERVICE NAME, not localhost.
+    DB_HOST: mysql
+    DB_PORT: "3306"
+    MYSQL_DATABASE: ${MYSQL_DATABASE:-gol651}
+    MYSQL_USER: ${MYSQL_USER:-gol651}
+    MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env (copy .env.example to .env)}
+  volumes:
+    - ./notebooks:/workspace/notebooks
+    - ./python:/workspace/python
+    - ./sql:/workspace/sql
+    - ./data:/workspace/data
+    - ./marimo:/workspace/marimo
+    - ./streamlit:/workspace/streamlit
+    - ./fastapi:/workspace/fastapi
+    - ./flask:/workspace/flask
+    - ./examples:/workspace/examples
+    - ./scripts:/workspace/scripts
+  depends_on:
+    mysql:
+      condition: service_healthy
+
+services:
+  # ---------------------------------------------------------------------------
+  # MySQL server (official image, LTS release)
+  # ---------------------------------------------------------------------------
+  mysql:
+    image: mysql:8.4
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env (copy .env.example to .env)}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-gol651}
+      MYSQL_USER: ${MYSQL_USER:-gol651}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env (copy .env.example to .env)}
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql                       # named volume: survives "down"
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro    # runs only on an empty volume
+    healthcheck:
+      # Real readiness: the server accepts TCP connections. During first-time
+      # initialization the image runs a temporary server WITHOUT networking, so
+      # this check cannot pass before init has finished.
+      # Deliberately credential-free: "mysqladmin ping" succeeds even when the
+      # password is refused. A password mismatch (.env edited after the first
+      # start) must not block Jupyter and the other tools; it is reported
+      # clearly by scripts/verify_databases.py instead.
+      test: ["CMD", "mysqladmin", "ping", "--protocol=TCP", "-h", "127.0.0.1",
+             "-P", "3306", "--connect-timeout=3", "--silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # phpMyAdmin (web administration for MySQL)
+  # ---------------------------------------------------------------------------
+  phpmyadmin:
+    image: phpmyadmin:5.2
+    environment:
+      PMA_HOST: mysql          # Docker service name of the database server
+      PMA_PORT: "3306"
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PHPMYADMIN_PORT:-8080}:80"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Jupyter - Notebook 7 interface by default; JupyterLab on demand at /lab.
+  # This service also BUILDS the shared Python image.
+  # ---------------------------------------------------------------------------
+  jupyter:
+    <<: *python-service
+    build:
+      context: .
+      dockerfile: docker/python/Dockerfile
+      args:
+        LOCAL_UID: ${LOCAL_UID:-1000}
+        LOCAL_GID: ${LOCAL_GID:-1000}
+    command:
+      - jupyter
+      - notebook
+      - --ip=0.0.0.0
+      - --port=8888
+      - --no-browser
+      - --ServerApp.root_dir=/workspace
+      - --IdentityProvider.token=
+      - --PasswordIdentityProvider.hashed_password=
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${JUPYTER_PORT:-8888}:8888"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8888/api/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # Optional profile: marimo
+  # ---------------------------------------------------------------------------
+  marimo:
+    <<: *python-service
+    profiles: ["marimo"]
+    pull_policy: never         # image is built by the jupyter service
+    command:
+      - marimo
+      - edit
+      - /workspace/marimo
+      - --host=0.0.0.0
+      - --port=2718
+      - --headless
+      - --no-token
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${MARIMO_PORT:-2718}:2718"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:2718/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Optional profile: web (Streamlit, FastAPI, Flask)
+  # ---------------------------------------------------------------------------
+  streamlit:
+    <<: *python-service
+    profiles: ["web"]
+    pull_policy: never
+    command:
+      - streamlit
+      - run
+      - /workspace/streamlit/app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+      - --server.fileWatcherType=poll     # reliable reload on Docker Desktop mounts
+      - --browser.gatherUsageStats=false
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${STREAMLIT_PORT:-8501}:8501"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8501/_stcore/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  fastapi:
+    <<: *python-service
+    profiles: ["web"]
+    pull_policy: never
+    working_dir: /workspace/fastapi
+    command:
+      - uvicorn
+      - main:app
+      - --host=0.0.0.0
+      - --port=8000
+      - --reload
+    environment:
+      DB_HOST: mysql
+      DB_PORT: "3306"
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-gol651}
+      MYSQL_USER: ${MYSQL_USER:-gol651}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env (copy .env.example to .env)}
+      WATCHFILES_FORCE_POLLING: "true"    # reliable --reload on Docker Desktop mounts
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${FASTAPI_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  flask:
+    <<: *python-service
+    profiles: ["web"]
+    pull_policy: never
+    working_dir: /workspace/flask
+    command:
+      - flask
+      - --app=app
+      - run
+      - --host=0.0.0.0
+      - --port=5000
+      - --debug
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${FLASK_PORT:-5000}:5000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:5000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  mysql-data:

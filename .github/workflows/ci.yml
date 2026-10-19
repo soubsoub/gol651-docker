@@ -1,0 +1,363 @@
+# =============================================================================
+# GOL651 Docker CI - execution mechanism for infrastructure verification
+# =============================================================================
+# This workflow is NOT documentation: it builds and runs the real environment
+# natively on two GitHub-hosted architectures and fails if anything breaks.
+#
+#   amd64 -> ubuntu-24.04       arm64 -> ubuntu-24.04-arm (native, no QEMU)
+#
+# Stages: A static config -> B native build -> C startup + health
+#         -> D real verification: HTTP, MySQL from the host, verification
+#            scripts, every example / notebook / app, persistence, optional
+#            profiles, and the student wrapper scripts (start, stop, restore,
+#            reset) -> logs on failure -> cleanup.
+#
+# Cost note: this repository is public; standard GitHub-hosted runners,
+# including ubuntu-24.04-arm, are free for public repositories. If the
+# repository is ever made private, these runs consume the account's
+# GitHub Actions minutes.
+# =============================================================================
+name: GOL651 Docker CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stack:
+    name: Stack (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false            # always get a result for BOTH architectures
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            machine: x86_64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+    defaults:
+      run:
+        shell: bash
+    env:
+      IMAGE: gol651-python:3.12-stage1
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - id: arch
+        name: Confirm native runner architecture
+        run: |
+          echo "Runner: ${{ matrix.runner }}  uname -m: $(uname -m)"
+          test "$(uname -m)" = "${{ matrix.machine }}"
+          echo "Docker server architecture: $(docker info --format '{{.Architecture}}')"
+
+      - name: Create .env from .env.example
+        run: |
+          cp .env.example .env
+          # Match the runner's UID/GID so bind-mounted folders are writable
+          # (the same procedure Linux students follow).
+          sed -i "s/^LOCAL_UID=.*/LOCAL_UID=$(id -u)/; s/^LOCAL_GID=.*/LOCAL_GID=$(id -g)/" .env
+          grep -E '^(LOCAL_UID|LOCAL_GID|BIND_ADDRESS)=' .env
+
+      # ---------------------------------------------------------------------
+      - id: static
+        name: Stage A - static configuration
+        run: |
+          docker version
+          docker compose version
+          docker compose config --quiet
+          docker compose --profile marimo --profile web config --quiet
+          echo "Default services : $(docker compose config --services | sort | tr '\n' ' ')"
+          echo "All services     : $(docker compose --profile marimo --profile web config --services | sort | tr '\n' ' ')"
+          test "$(docker compose config --services | sort | tr '\n' ' ')" = "jupyter mysql phpmyadmin "
+          # Syntax of every student / init shell script.
+          for f in scripts/*.sh; do sh -n "$f" && echo "sh syntax OK: $f"; done
+          bash -n mysql/init/02_teaching_schema.sh && echo "bash syntax OK: mysql/init/02_teaching_schema.sh"
+          # PowerShell scripts: parsed when PowerShell is available on the runner.
+          if command -v pwsh > /dev/null; then
+            # shellcheck disable=SC2016  # PowerShell code: $ must reach pwsh unexpanded
+            pwsh -NoProfile -Command '
+              $failed = $false
+              foreach ($f in Get-ChildItem scripts/*.ps1) {
+                $errors = $null
+                [System.Management.Automation.Language.Parser]::ParseFile($f.FullName, [ref]$null, [ref]$errors) | Out-Null
+                if ($errors.Count) { $failed = $true; Write-Host "PARSE ERROR $($f.Name): $errors" }
+                else { Write-Host "PowerShell syntax OK: $($f.Name)" }
+              }
+              if ($failed) { exit 1 }'
+          else
+            echo "pwsh not installed on this runner: PowerShell parsing skipped (NOT TESTED here)"
+          fi
+
+      # ---------------------------------------------------------------------
+      - id: build
+        name: Stage B - native image build
+        run: |
+          docker compose build --pull
+          built_arch="$(docker image inspect "$IMAGE" --format '{{.Architecture}}')"
+          echo "Built image architecture: $built_arch"
+          test "$built_arch" = "${{ matrix.arch }}"
+
+      # ---------------------------------------------------------------------
+      - id: startup
+        name: Stage C - start default services and wait for health checks
+        run: |
+          docker compose up -d --wait --wait-timeout 420
+          docker compose ps
+
+      # ---------------------------------------------------------------------
+      - id: http_default
+        name: Stage D1 - HTTP from the host (Jupyter, phpMyAdmin)
+        run: |
+          set -a; source .env; set +a
+          probe() {  # probe URL [expected-text]
+            for _ in $(seq 1 30); do
+              if body="$(curl -fsS --max-time 5 "$1")"; then
+                if [ -z "${2:-}" ] || grep -q "$2" <<< "$body"; then
+                  echo "OK   $1"; return 0
+                fi
+              fi
+              sleep 2
+            done
+            echo "FAIL $1"; return 1
+          }
+          probe "http://127.0.0.1:${JUPYTER_PORT}/api/status"
+          probe "http://127.0.0.1:${JUPYTER_PORT}/tree"
+          probe "http://127.0.0.1:${JUPYTER_PORT}/lab" "JupyterLab"
+          # Notebook 7 (not JupyterLab) must be the default interface.
+          redirect="$(curl -s -o /dev/null -w '%{redirect_url}' "http://127.0.0.1:${JUPYTER_PORT}/")"
+          echo "Jupyter root redirects to: $redirect"
+          [[ "$redirect" == */tree* ]]
+          probe "http://127.0.0.1:${PHPMYADMIN_PORT}/" "phpMyAdmin"
+
+      - id: mysql_host
+        name: Stage D2 - MySQL from the host on 127.0.0.1 (MySQL Workbench path)
+        run: |
+          set -a; source .env; set +a
+          docker run --rm --network host -e MYSQL_PWD="$MYSQL_PASSWORD" mysql:8.4 \
+            mysql --protocol=TCP -h 127.0.0.1 -P "$MYSQL_PORT" -u "$MYSQL_USER" "$MYSQL_DATABASE" \
+            -e "SELECT VERSION() AS version, DATABASE() AS db, CURRENT_USER() AS user;
+                SHOW DATABASES LIKE 'gol651%';
+                SELECT COUNT(*) AS customers FROM gol651.customers;
+                SELECT COUNT(*) AS exercise_orders FROM gol651_exercises.orders;"
+          # Teaching data must be visible from the host exactly as in Workbench.
+          count="$(docker run --rm --network host -e MYSQL_PWD="$MYSQL_PASSWORD" mysql:8.4 \
+            mysql -N --protocol=TCP -h 127.0.0.1 -P "$MYSQL_PORT" -u "$MYSQL_USER" \
+            -e "SELECT COUNT(*) FROM gol651.order_items")"
+          test "$count" = "59"
+
+      - id: container_user
+        name: Stage D3 - non-root user and bind-mount file ownership
+        run: |
+          docker compose exec -T jupyter sh -c 'id; python --version; command -v cbc glpsol sqlite3 git'
+          test "$(docker compose exec -T jupyter id -u)" = "$(id -u)"
+          test "$(docker compose exec -T jupyter id -u)" != "0"
+          docker compose exec -T jupyter touch /workspace/data/_ci_owner_check
+          test "$(stat -c %u data/_ci_owner_check)" = "$(id -u)"
+          rm -f data/_ci_owner_check
+
+      - id: verify_env
+        name: Stage D4 - scripts/verify_environment.py (inside the container)
+        run: docker compose exec -T jupyter python scripts/verify_environment.py
+
+      - id: verify_db
+        name: Stage D5 - scripts/verify_databases.py (inside the container)
+        run: docker compose exec -T jupyter python scripts/verify_databases.py
+
+      - id: verify_solvers
+        name: Stage D6 - scripts/verify_solvers.py (inside the container)
+        run: docker compose exec -T jupyter python scripts/verify_solvers.py
+
+      - id: verify_examples
+        name: Stage D7 - scripts/verify_examples.py (examples, notebooks, apps)
+        run: docker compose exec -T jupyter python scripts/verify_examples.py
+
+      - id: persistence
+        name: Stage D8 - MySQL data survives "docker compose down" (no -v)
+        run: |
+          set -a; source .env; set +a
+          sql() {
+            docker compose exec -T -e MYSQL_PWD="$MYSQL_PASSWORD" mysql \
+              mysql -N -u "$MYSQL_USER" "$MYSQL_DATABASE" -e "$1"
+          }
+          sql "CREATE TABLE ci_persistence (id INT PRIMARY KEY); INSERT INTO ci_persistence VALUES (42);"
+          docker compose down
+          docker volume inspect gol651_mysql-data > /dev/null
+          docker compose up -d --wait --wait-timeout 300
+          test "$(sql 'SELECT id FROM ci_persistence')" = "42"
+          # Init scripts must NOT run again on a non-empty volume.
+          test "$(sql 'SELECT COUNT(*) FROM environment_info')" = "1"
+          test "$(sql 'SELECT COUNT(*) FROM orders')" = "25"
+          sql "DROP TABLE ci_persistence"
+
+      - id: profiles
+        name: Stage D9 - optional profiles marimo and web (real HTTP)
+        run: |
+          set -a; source .env; set +a
+          docker compose --profile marimo --profile web up -d --wait --wait-timeout 300
+          docker compose --profile marimo --profile web ps
+          probe() {
+            for _ in $(seq 1 30); do
+              if body="$(curl -fsS --max-time 5 "$1")"; then
+                if [ -z "${2:-}" ] || grep -q "$2" <<< "$body"; then
+                  echo "OK   $1"; return 0
+                fi
+              fi
+              sleep 2
+            done
+            echo "FAIL $1"; return 1
+          }
+          probe "http://127.0.0.1:${MARIMO_PORT}/"
+          probe "http://127.0.0.1:${STREAMLIT_PORT}/_stcore/health" "ok"
+          probe "http://127.0.0.1:${FASTAPI_PORT}/health" '"database":"ok"'
+          probe "http://127.0.0.1:${FASTAPI_PORT}/docs" "swagger"
+          probe "http://127.0.0.1:${FASTAPI_PORT}/products" '"sku":"PAL-001"'
+          probe "http://127.0.0.1:${FASTAPI_PORT}/products/GAN-080" '"sku":"GAN-080"'
+          probe "http://127.0.0.1:${FLASK_PORT}/" "GOL651"
+          probe "http://127.0.0.1:${FLASK_PORT}/api/time" "server_time"
+
+      - id: wrappers
+        name: Stage D10 - student wrapper scripts (stop, start, restore, reset)
+        run: |
+          set -a; source .env; set +a
+          sql() {
+            docker compose exec -T -e MYSQL_PWD="$MYSQL_PASSWORD" mysql \
+              mysql -N -u "$MYSQL_USER" -e "$1"
+          }
+          sh scripts/stop.sh
+          test -z "$(docker compose --profile marimo --profile web ps -q)"
+          docker volume inspect gol651_mysql-data > /dev/null      # stop keeps the data
+
+          sh scripts/start.sh all
+          test "$(sql 'SELECT COUNT(*) FROM gol651.orders')" = "25"
+
+          # restore-exercises: damage the practice copy, refuse once, then restore.
+          sql "DELETE FROM gol651_exercises.order_items; DROP VIEW gol651_exercises.v_low_stock;"
+          if printf 'no\n' | sh scripts/restore-exercises.sh; then exit 1; fi
+          test "$(sql 'SELECT COUNT(*) FROM gol651_exercises.order_items')" = "0"
+          printf 'yes\n' | sh scripts/restore-exercises.sh
+          test "$(sql 'SELECT COUNT(*) FROM gol651_exercises.order_items')" = "59"
+          test "$(sql 'SELECT COUNT(*) FROM gol651_exercises.v_low_stock')" = "3"
+          if command -v pwsh > /dev/null; then          # same check with the .ps1 version
+            sql "DELETE FROM gol651_exercises.order_items"
+            printf 'yes\n' | pwsh -NoProfile -File scripts/restore-exercises.ps1
+            test "$(sql 'SELECT COUNT(*) FROM gol651_exercises.order_items')" = "59"
+          fi
+
+          # reset: refusing deletes nothing; accepting re-initializes MySQL.
+          sql "CREATE TABLE gol651.ci_reset_marker (id INT)"
+          if printf 'no\n' | sh scripts/reset.sh; then exit 1; fi
+          test "$(sql "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'ci_reset_marker'")" = "1"
+          printf 'yes\n' | sh scripts/reset.sh
+          test "$(sql "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'ci_reset_marker'")" = "0"
+          test "$(sql 'SELECT COUNT(*) FROM gol651_exercises.order_items')" = "59"
+
+      - id: password_mismatch
+        name: Stage D11 - MYSQL_PASSWORD changed in .env after the first start
+        run: |
+          # MySQL keeps its first-start password. The stack must still start
+          # (health check is credential-free) and the verifier must explain why.
+          cp .env .env.ci-backup
+          sed -i 's/^MYSQL_PASSWORD=.*/MYSQL_PASSWORD=changed_after_first_start/' .env
+          docker compose up -d --wait --wait-timeout 300
+          set +e
+          out="$(docker compose exec -T jupyter python scripts/verify_databases.py)"
+          code=$?
+          set -e
+          grep -A2 "MySQL (PyMySQL)" <<< "$out"
+          test "$code" -ne 0
+          grep -q "Access denied" <<< "$out"
+          grep -q "changed after the first start" <<< "$out"
+          mv .env.ci-backup .env
+          docker compose up -d --wait --wait-timeout 300
+          docker compose exec -T jupyter python scripts/verify_databases.py > /dev/null
+
+      # ---------------------------------------------------------------------
+      - name: Diagnostics (only when a step failed)
+        if: failure()
+        run: |
+          docker compose --profile marimo --profile web ps -a || true
+          docker compose --profile marimo --profile web logs --no-color --timestamps --tail=300 || true
+
+      - name: Status summary
+        if: always()
+        env:
+          ARCH: ${{ matrix.arch }}
+          R_ARCH: ${{ steps.arch.outcome }}
+          R_STATIC: ${{ steps.static.outcome }}
+          R_BUILD: ${{ steps.build.outcome }}
+          R_STARTUP: ${{ steps.startup.outcome }}
+          R_HTTP: ${{ steps.http_default.outcome }}
+          R_MYSQL_HOST: ${{ steps.mysql_host.outcome }}
+          R_USER: ${{ steps.container_user.outcome }}
+          R_ENV: ${{ steps.verify_env.outcome }}
+          R_DB: ${{ steps.verify_db.outcome }}
+          R_SOLVERS: ${{ steps.verify_solvers.outcome }}
+          R_EXAMPLES: ${{ steps.verify_examples.outcome }}
+          R_PERSIST: ${{ steps.persistence.outcome }}
+          R_PROFILES: ${{ steps.profiles.outcome }}
+          R_WRAPPERS: ${{ steps.wrappers.outcome }}
+          R_PASSWORD: ${{ steps.password_mismatch.outcome }}
+        run: |
+          status() {
+            case "$1" in
+              success) echo "EXECUTED ON ${ARCH^^} - PASS" ;;
+              failure) echo "FAILED" ;;
+              *)       echo "NOT TESTED" ;;
+            esac
+          }
+          {
+            echo "### GOL651 CI - ${ARCH}"
+            echo ""
+            echo "| Check | Status |"
+            echo "|---|---|"
+            echo "| Native architecture | $(status "$R_ARCH") |"
+            echo "| A. Compose configuration | $(status "$R_STATIC") |"
+            echo "| B. Native image build | $(status "$R_BUILD") |"
+            echo "| C. Startup + health checks | $(status "$R_STARTUP") |"
+            echo "| D1. Jupyter + phpMyAdmin HTTP | $(status "$R_HTTP") |"
+            echo "| D2. MySQL from host (Workbench path) | $(status "$R_MYSQL_HOST") |"
+            echo "| D3. Non-root user + file ownership | $(status "$R_USER") |"
+            echo "| D4. verify_environment.py | $(status "$R_ENV") |"
+            echo "| D5. verify_databases.py | $(status "$R_DB") |"
+            echo "| D6. verify_solvers.py | $(status "$R_SOLVERS") |"
+            echo "| D7. verify_examples.py (examples, notebooks, apps) | $(status "$R_EXAMPLES") |"
+            echo "| D8. MySQL persistence | $(status "$R_PERSIST") |"
+            echo "| D9. Profiles marimo + web (HTTP) | $(status "$R_PROFILES") |"
+            echo "| D10. Wrapper scripts (stop, start, restore, reset) | $(status "$R_WRAPPERS") |"
+            echo "| D11. Password changed after first start (resilience) | $(status "$R_PASSWORD") |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Clean up (CI only - test volumes are disposable)
+        if: always()
+        run: docker compose --profile marimo --profile web down -v --remove-orphans || true
+
+  verdict:
+    name: Verdict (amd64 + arm64)
+    needs: stack
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: VERIFIED only if both architectures passed
+        env:
+          RESULT: ${{ needs.stack.result }}
+        run: |
+          if [ "$RESULT" = "success" ]; then
+            echo "### VERIFIED - all checks executed and passed on amd64 AND arm64" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### FAILED - at least one architecture did not pass (result: $RESULT)" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
