@@ -10,7 +10,7 @@ What is executed
   examples/optimization/*.py      LP and MILP (MILP compared across 3 solvers)
   notebooks/examples/*.ipynb      every cell, headless (outputs are NOT saved)
   marimo/demo_app.py              "marimo check" + run as a script
-  streamlit/app.py                Streamlit AppTest: no exception raised
+  streamlit/app.py + page_*.py    every page rendered (AppTest); order transactions
   fastapi/main.py                 endpoints called with FastAPI's TestClient
   flask/app.py                    pages called with Flask's test client
 
@@ -106,7 +106,15 @@ def _marimo() -> str:
     return "marimo check + run as a script"
 
 
+STREAMLIT_PAGES = [
+    "page_tuto1_widgets.py", "page_tuto2_layout.py", "page_tuto3_state.py",
+    "page_tuto4_cache.py", "page_eoq.py", "page_dashboard.py", "page_orders.py",
+    "page_optimization.py",
+]
+
+
 def _streamlit() -> str:
+    """Every page of the multipage app renders without exception or warning."""
     os.environ.setdefault("STREAMLIT_LOGGER_LEVEL", "error")
     from streamlit.testing.v1 import AppTest
 
@@ -115,10 +123,66 @@ def _streamlit() -> str:
             logging.getLogger(name).setLevel(logging.ERROR)
     at = AppTest.from_file(str(ROOT / "streamlit" / "app.py"), default_timeout=120).run()
     if at.exception:
-        raise RuntimeError(at.exception[0].message)
-    if at.warning:   # the app shows a warning when MySQL is unreachable
-        raise RuntimeError(f"app warning: {at.warning[0].value}")
-    return f"{len(at.metric)} metrics, {len(at.dataframe)} table from MySQL"
+        raise RuntimeError(f"home: {at.exception[0].message}")
+    for page in STREAMLIT_PAGES:
+        at.switch_page(page).run()
+        if at.exception:
+            raise RuntimeError(f"{page}: {at.exception[0].message}")
+        if at.warning:   # pages show a warning when MySQL is unreachable
+            raise RuntimeError(f"{page}: warning: {at.warning[0].value}")
+    return f"home + {len(STREAMLIT_PAGES)} pages rendered"
+
+
+def _streamlit_orders() -> str:
+    """Order transactions of the Orders page, then cleanup (gol651_exercises only)."""
+    sys.path.insert(0, str(ROOT / "streamlit"))
+    import common
+    from sqlalchemy import text
+
+    eng = common.engine(common.EXERCISES_DB)
+
+    def stock(pid: int) -> int:
+        with eng.connect() as conn:
+            return conn.execute(text("SELECT quantity_on_hand FROM inventory "
+                                     "WHERE product_id = :p"), {"p": pid}).scalar_one()
+
+    product = 13                                    # GAN-080, large stock
+    before = stock(product)
+    created = []
+    try:
+        first = common.place_order(1, product, 5)
+        created.append(first)
+        if stock(product) != before - 5:
+            raise AssertionError("stock was not decreased")
+        try:
+            common.place_order(1, product, before + 1000)
+            raise AssertionError("an order larger than the stock was accepted")
+        except common.OrderError:
+            pass
+        common.set_order_status(first, "shipped")
+        try:
+            common.cancel_order(first)
+            raise AssertionError("a shipped order was cancelled")
+        except common.OrderError:
+            pass
+        second = common.place_order(1, product, 7)
+        created.append(second)
+        common.cancel_order(second)                 # puts the 7 units back
+        if stock(product) != before - 5:
+            raise AssertionError("cancel did not restore the stock")
+    finally:                                        # leave gol651_exercises as found
+        with eng.begin() as conn:
+            for order_id in created:
+                conn.execute(text("""
+                    UPDATE inventory AS i JOIN order_items AS oi ON oi.product_id = i.product_id
+                    JOIN orders AS o ON o.order_id = oi.order_id
+                    SET i.quantity_on_hand = i.quantity_on_hand + oi.quantity
+                    WHERE o.order_id = :oid AND o.status <> 'cancelled'
+                """), {"oid": order_id})
+                conn.execute(text("DELETE FROM orders WHERE order_id = :oid"), {"oid": order_id})
+    if stock(product) != before:
+        raise AssertionError("cleanup did not restore the original stock")
+    return "create, stock check, ship, cancel rules; data restored"
 
 
 def _fastapi() -> str:
@@ -176,7 +240,8 @@ def run_checks() -> list[tuple[str, bool, str, str]]:
         results.append(_run(f"notebooks/examples/{nb.name}", _notebook(nb), db_hint))
     results.append(_run("marimo/demo_app.py", _marimo, "Open the app with the marimo profile "
                         "to see the error: docker compose --profile marimo up -d"))
-    results.append(_run("streamlit/app.py", _streamlit, db_hint))
+    results.append(_run("streamlit/app.py (all pages)", _streamlit, db_hint))
+    results.append(_run("streamlit order transactions", _streamlit_orders, db_hint))
     results.append(_run("fastapi/main.py", _fastapi, db_hint))
     results.append(_run("flask/app.py", _flask, "See: docker compose logs flask"))
     return results
