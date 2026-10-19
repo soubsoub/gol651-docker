@@ -320,6 +320,7 @@ docker compose logs mysql --tail=50       # ou jupyter, phpmyadmin, streamlit…
 | `ModuleNotFoundError` | Python lancé sur votre ordinateur au lieu du conteneur | Utilisez `docker compose exec jupyter python …`. |
 | Linux : `Permission denied` dans `notebooks/` ou `data/` | UID/GID différents | Réglez `LOCAL_UID`/`LOCAL_GID` (section 4), `docker compose build`. N'utilisez pas `chmod 777`. |
 | Windows : `/bin/sh^M: bad interpreter` | Fins de ligne CRLF | `git config --global core.autocrlf input`, puis reclonez le dépôt. |
+| `ERROR 1227 ... SYSTEM_USER privilege` en supprimant ou remplaçant une vue de `gol651_exercises` | Base créée par une version antérieure à 2.3 (vues appartenant à `root`) | `restore-exercises` une fois (efface vos modifications de `gol651_exercises`). Les vues de `gol651` (référence) restent protégées : c'est voulu. |
 | Apple Silicon : `exec format error` | Image d'une autre architecture | `docker compose build --pull`. Ne forcez pas `platform: linux/amd64`. |
 
 ### 16. Sécurité
@@ -643,6 +644,7 @@ docker compose logs mysql --tail=50       # or jupyter, phpmyadmin, streamlit…
 | `ModuleNotFoundError` | Python started on your computer instead of the container | Use `docker compose exec jupyter python …`. |
 | Linux: `Permission denied` in `notebooks/` or `data/` | Different UID/GID | Set `LOCAL_UID`/`LOCAL_GID` (section 4), `docker compose build`. Do not use `chmod 777`. |
 | Windows: `/bin/sh^M: bad interpreter` | CRLF line endings | `git config --global core.autocrlf input`, then clone the repository again. |
+| `ERROR 1227 ... SYSTEM_USER privilege` when dropping or replacing a view in `gol651_exercises` | Database created by a version older than 2.3 (views owned by `root`) | Run `restore-exercises` once (erases your changes to `gol651_exercises`). Views in `gol651` (reference) stay protected on purpose. |
 | Apple Silicon: `exec format error` | Image from another architecture | `docker compose build --pull`. Do not force `platform: linux/amd64`. |
 
 ### 16. Security

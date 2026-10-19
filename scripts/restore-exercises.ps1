@@ -20,8 +20,12 @@ if ($answer -ne 'yes') {
 
 # Runs inside the mysql container. Written WITHOUT double quotes on purpose:
 # Windows PowerShell 5.1 strips embedded double quotes from native arguments.
-$inner = 'for f in /docker-entrypoint-initdb.d/teaching/0*.sql; do echo loading $f; ' +
-         'MYSQL_PWD=$MYSQL_ROOT_PASSWORD mysql -uroot --default-character-set=utf8mb4 ' +
+# 1. root drops the views (they may be owned by root on volumes created before
+#    stage 2.3); 2. the course user reloads everything.
+$inner = 'echo DROP VIEW IF EXISTS v_customer_sales, v_low_stock, v_order_totals | ' +
+         'MYSQL_PWD=$MYSQL_ROOT_PASSWORD mysql -uroot gol651_exercises || exit 1; ' +
+         'for f in /docker-entrypoint-initdb.d/teaching/0*.sql; do echo loading $f; ' +
+         'MYSQL_PWD=$MYSQL_PASSWORD mysql -u$MYSQL_USER --default-character-set=utf8mb4 ' +
          'gol651_exercises < $f || exit 1; done'
 & docker compose exec -T mysql sh -c $inner
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -2,7 +2,8 @@
 -- GOL651 - Teaching schema: views
 -- =============================================================================
 -- SQL SECURITY INVOKER: a view runs with the privileges of the person who
--- queries it, so students can recreate or modify views in gol651_exercises.
+-- queries it. In gol651_exercises the views are created by the course user
+-- (see 02_teaching_schema.sh), so students can drop, recreate or modify them.
 -- =============================================================================
 
 SET NAMES utf8mb4;

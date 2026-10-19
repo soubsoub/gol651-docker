@@ -244,17 +244,32 @@ jobs:
           sh scripts/start.sh all
           test "$(sql 'SELECT COUNT(*) FROM gol651.orders')" = "25"
 
-          # restore-exercises: damage the practice copy, refuse once, then restore.
+          root_sql() {
+            docker compose exec -T -e MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql \
+              mysql -N -u root -e "$1"
+          }
+          views_owned_by_course_user() {
+            test "$(sql "SELECT COUNT(*) FROM information_schema.views WHERE table_schema = 'gol651_exercises' AND definer LIKE '${MYSQL_USER}@%'")" = "3"
+          }
+          views_owned_by_course_user                     # first start: student owns the practice views
+
+          # restore-exercises: damage the practice copy (as the student), refuse once, then restore.
           sql "DELETE FROM gol651_exercises.order_items; DROP VIEW gol651_exercises.v_low_stock;"
           if printf 'no\n' | sh scripts/restore-exercises.sh; then exit 1; fi
           test "$(sql 'SELECT COUNT(*) FROM gol651_exercises.order_items')" = "0"
+          # volume from before stage 2.3: a practice view owned by root
+          root_sql "CREATE OR REPLACE SQL SECURITY INVOKER VIEW gol651_exercises.v_low_stock AS SELECT 1 AS x"
           printf 'yes\n' | sh scripts/restore-exercises.sh
           test "$(sql 'SELECT COUNT(*) FROM gol651_exercises.order_items')" = "59"
           test "$(sql 'SELECT COUNT(*) FROM gol651_exercises.v_low_stock')" = "3"
+          views_owned_by_course_user
           if command -v pwsh > /dev/null; then          # same check with the .ps1 version
             sql "DELETE FROM gol651_exercises.order_items"
+            # volume from before stage 2.3: a practice view owned by root
+            root_sql "CREATE OR REPLACE SQL SECURITY INVOKER VIEW gol651_exercises.v_low_stock AS SELECT 1 AS x"
             printf 'yes\n' | pwsh -NoProfile -File scripts/restore-exercises.ps1
             test "$(sql 'SELECT COUNT(*) FROM gol651_exercises.order_items')" = "59"
+            views_owned_by_course_user
           fi
 
           # reset: refusing deletes nothing; accepting re-initializes MySQL.
@@ -264,6 +279,10 @@ jobs:
           printf 'yes\n' | sh scripts/reset.sh
           test "$(sql "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'ci_reset_marker'")" = "0"
           test "$(sql 'SELECT COUNT(*) FROM gol651_exercises.order_items')" = "59"
+          views_owned_by_course_user
+          sql "DROP VIEW gol651_exercises.v_low_stock"   # the student may drop a practice view
+          if sql "DROP VIEW gol651.v_low_stock"; then exit 1; fi   # but not a reference view
+          printf 'yes\n' | sh scripts/restore-exercises.sh > /dev/null
 
       - id: password_mismatch
         name: Stage D11 - MYSQL_PASSWORD changed in .env after the first start
