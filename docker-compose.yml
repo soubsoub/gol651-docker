@@ -1,5 +1,5 @@
 # =============================================================================
-# GOL651 - Docker Compose environment (Stage 1)
+# GOL651 - Docker Compose environment
 # =============================================================================
 # Default services   : mysql, phpmyadmin, jupyter
 #   docker compose up -d
@@ -10,6 +10,9 @@
 #   docker compose --profile marimo --profile web up -d
 #
 # All values come from .env (copy .env.example to .env first).
+# The Python image is DOWNLOADED, ready-made, from GitHub Container Registry
+# (built and tested by the course CI). To build it locally instead (Linux
+# with a UID other than 1000, or instructor work), see docker-compose.build.yml.
 # Ports are published on BIND_ADDRESS (default 127.0.0.1 = this computer only).
 # LOCAL TEACHING ENVIRONMENT - DO NOT EXPOSE TO THE PUBLIC INTERNET.
 # =============================================================================
@@ -18,10 +21,12 @@ name: gol651
 
 # -----------------------------------------------------------------------------
 # Shared definition for every Python service.
-# One image (gol651-python) is built once and reused with different commands.
+# One image (gol651-python) is reused by all of them with different commands.
+# The course release is FIXED here; it changes only when the instructor
+# publishes a new version (git pull, then start again: it is downloaded once).
 # -----------------------------------------------------------------------------
 x-python-service: &python-service
-  image: gol651-python:3.12-stage1
+  image: ${GOL651_IMAGE:-ghcr.io/soubsoub/gol651-python:v1.0.0}
   init: true                       # reaps zombie processes, forwards signals
   working_dir: /workspace
   environment:
@@ -96,16 +101,9 @@ services:
 
   # ---------------------------------------------------------------------------
   # Jupyter - Notebook 7 interface by default; JupyterLab on demand at /lab.
-  # This service also BUILDS the shared Python image.
   # ---------------------------------------------------------------------------
   jupyter:
     <<: *python-service
-    build:
-      context: .
-      dockerfile: docker/python/Dockerfile
-      args:
-        LOCAL_UID: ${LOCAL_UID:-1000}
-        LOCAL_GID: ${LOCAL_GID:-1000}
     command:
       - jupyter
       - notebook
@@ -130,7 +128,6 @@ services:
   marimo:
     <<: *python-service
     profiles: ["marimo"]
-    pull_policy: never         # image is built by the jupyter service
     command:
       - marimo
       - edit
@@ -154,7 +151,6 @@ services:
   streamlit:
     <<: *python-service
     profiles: ["web"]
-    pull_policy: never
     command:
       - streamlit
       - run
@@ -176,7 +172,6 @@ services:
   fastapi:
     <<: *python-service
     profiles: ["web"]
-    pull_policy: never
     working_dir: /workspace/fastapi
     command:
       - uvicorn
@@ -203,7 +198,6 @@ services:
   flask:
     <<: *python-service
     profiles: ["web"]
-    pull_policy: never
     working_dir: /workspace/flask
     command:
       - flask

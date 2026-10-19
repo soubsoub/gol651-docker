@@ -12,6 +12,12 @@
 #            profiles, and the student wrapper scripts (start, stop, restore,
 #            reset) -> logs on failure -> cleanup.
 #
+# Release (push of a tag vX.Y.Z only): the image tested above on each
+# architecture is pushed as-is (staging tag), then combined into ONE
+# multi-architecture image ghcr.io/<owner>/gol651-python:vX.Y.Z. A release
+# tag is never overwritten. A last job then runs the STUDENT path (download
+# the published image, no local build) on both architectures.
+#
 # Cost note: this repository is public; standard GitHub-hosted runners,
 # including ubuntu-24.04-arm, are free for public repositories. If the
 # repository is ever made private, these runs consume the account's
@@ -22,6 +28,7 @@ name: GOL651 Docker CI
 on:
   push:
     branches: [main]
+    tags: ["v*.*.*"]
   pull_request:
   workflow_dispatch:
 
@@ -47,11 +54,15 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
             machine: aarch64
+    permissions:
+      contents: read
+      packages: write             # release runs only: push the tested image
     defaults:
       run:
         shell: bash
     env:
-      IMAGE: gol651-python:3.12-stage1
+      IMAGE: gol651-python:local  # name given by docker-compose.build.yml
+      RELEASE: ${{ startsWith(github.ref, 'refs/tags/v') }}
 
     steps:
       - name: Check out repository
@@ -67,10 +78,19 @@ jobs:
       - name: Create .env from .env.example
         run: |
           cp .env.example .env
-          # Match the runner's UID/GID so bind-mounted folders are writable
-          # (the same procedure Linux students follow).
-          sed -i "s/^LOCAL_UID=.*/LOCAL_UID=$(id -u)/; s/^LOCAL_GID=.*/LOCAL_GID=$(id -g)/" .env
-          grep -E '^(LOCAL_UID|LOCAL_GID|BIND_ADDRESS)=' .env
+          # The CI always BUILDS the image (docker-compose.build.yml), enabled
+          # exactly as documented for students: one COMPOSE_FILE line in .env.
+          echo "COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml" >> .env
+          if [ "$RELEASE" = "true" ]; then
+            # Release image: UID/GID 1000, the published default. Docker Desktop
+            # (Windows, macOS) makes project folders writable whatever the UID;
+            # the runner (UID $(id -u)) simulates that by opening the folders.
+            chmod -R a+rwX notebooks python sql data marimo streamlit fastapi flask examples scripts
+          else
+            # Match the runner's UID/GID: the Linux local-build procedure.
+            sed -i "s/^LOCAL_UID=.*/LOCAL_UID=$(id -u)/; s/^LOCAL_GID=.*/LOCAL_GID=$(id -g)/" .env
+          fi
+          grep -E '^(LOCAL_UID|LOCAL_GID|BIND_ADDRESS|COMPOSE_FILE)=' .env
 
       # ---------------------------------------------------------------------
       - id: static
@@ -83,6 +103,18 @@ jobs:
           echo "Default services : $(docker compose config --services | sort | tr '\n' ' ')"
           echo "All services     : $(docker compose --profile marimo --profile web config --services | sort | tr '\n' ' ')"
           test "$(docker compose config --services | sort | tr '\n' ' ')" = "jupyter mysql phpmyadmin "
+          # Student mode (docker-compose.yml alone): every Python service uses
+          # the published course image, and nothing is built.
+          student="$(docker compose -f docker-compose.yml --profile marimo --profile web config --format json)"
+          release_image="$(jq -r '.services.jupyter.image' <<< "$student")"
+          echo "Course image referenced by docker-compose.yml: $release_image"
+          test "$(jq -r '[.services[] | select(has("build"))] | length' <<< "$student")" = "0"
+          test "$(jq -r '[.services[] | select(.image == "'"$release_image"'")] | length' <<< "$student")" = "5"
+          if [ "$RELEASE" = "true" ]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Release tags must look like v1.0.0"; exit 1; }
+            # Students must receive exactly the release being tagged.
+            test "$release_image" = "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/gol651-python:${GITHUB_REF_NAME}"
+          fi
           # Syntax of every student / init shell script.
           for f in scripts/*.sh; do sh -n "$f" && echo "sh syntax OK: $f"; done
           bash -n mysql/init/02_teaching_schema.sh && echo "bash syntax OK: mysql/init/02_teaching_schema.sh"
@@ -162,11 +194,12 @@ jobs:
       - id: container_user
         name: Stage D3 - non-root user and bind-mount file ownership
         run: |
+          expected_uid="$(grep -E '^LOCAL_UID=' .env | cut -d= -f2)"
           docker compose exec -T jupyter sh -c 'id; python --version; command -v cbc glpsol sqlite3 git'
-          test "$(docker compose exec -T jupyter id -u)" = "$(id -u)"
+          test "$(docker compose exec -T jupyter id -u)" = "$expected_uid"
           test "$(docker compose exec -T jupyter id -u)" != "0"
           docker compose exec -T jupyter touch /workspace/data/_ci_owner_check
-          test "$(stat -c %u data/_ci_owner_check)" = "$(id -u)"
+          test "$(stat -c %u data/_ci_owner_check)" = "$expected_uid"
           rm -f data/_ci_owner_check
 
       - id: verify_env
@@ -305,6 +338,24 @@ jobs:
           docker compose exec -T jupyter python scripts/verify_databases.py > /dev/null
 
       # ---------------------------------------------------------------------
+      - name: Release - log in to GitHub Container Registry
+        if: env.RELEASE == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: stage_push
+        name: Release - push the TESTED image (staging tag, this architecture)
+        if: env.RELEASE == 'true'
+        run: |
+          # Same image as every check above: no rebuild between test and push.
+          ref="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/gol651-python:ci-${GITHUB_SHA::12}-${{ matrix.arch }}"
+          docker tag "$IMAGE" "$ref"
+          docker push "$ref"
+
+      # ---------------------------------------------------------------------
       - name: Diagnostics (only when a step failed)
         if: failure()
         run: |
@@ -330,6 +381,7 @@ jobs:
           R_PROFILES: ${{ steps.profiles.outcome }}
           R_WRAPPERS: ${{ steps.wrappers.outcome }}
           R_PASSWORD: ${{ steps.password_mismatch.outcome }}
+          R_STAGE: ${{ steps.stage_push.outcome }}
         run: |
           status() {
             case "$1" in
@@ -358,6 +410,9 @@ jobs:
             echo "| D9. Profiles marimo + web (HTTP) | $(status "$R_PROFILES") |"
             echo "| D10. Wrapper scripts (stop, start, restore, reset) | $(status "$R_WRAPPERS") |"
             echo "| D11. Password changed after first start (resilience) | $(status "$R_PASSWORD") |"
+            if [ "$RELEASE" = "true" ]; then
+              echo "| R1. Tested image pushed (staging tag) | $(status "$R_STAGE") |"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Clean up (CI only - test volumes are disposable)
@@ -380,3 +435,105 @@ jobs:
             echo "### FAILED - at least one architecture did not pass (result: $RESULT)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
+
+  # ===========================================================================
+  # Release only (tag vX.Y.Z): publish ONE multi-architecture course image.
+  # ===========================================================================
+  publish:
+    name: Publish release image (amd64 + arm64)
+    needs: stack
+    if: startsWith(github.ref, 'refs/tags/v') && needs.stack.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write             # GitHub release with the image digest
+      packages: write
+    outputs:
+      digest: ${{ steps.create.outputs.digest }}
+    steps:
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: create
+        name: Combine the two tested images under the release tag
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/gol651-python"
+          staging="ci-${GITHUB_SHA::12}"
+          # A published release is never replaced: fix problems with a new version.
+          if docker buildx imagetools inspect "$repo:$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            echo "::error::$repo:$GITHUB_REF_NAME already exists. Publish a new version (e.g. a higher patch number) instead."
+            exit 1
+          fi
+          docker buildx imagetools create -t "$repo:$GITHUB_REF_NAME" \
+            "$repo:$staging-amd64" "$repo:$staging-arm64"
+          platforms="$(docker buildx imagetools inspect --raw "$repo:$GITHUB_REF_NAME" \
+            | jq -r '.manifests[].platform | "\(.os)/\(.architecture)"' | sort -u | tr '\n' ' ')"
+          echo "Platforms: $platforms"
+          grep -q "linux/amd64" <<< "$platforms"
+          grep -q "linux/arm64" <<< "$platforms"
+          digest="$(docker buildx imagetools inspect "$repo:$GITHUB_REF_NAME" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Published $repo:$GITHUB_REF_NAME"
+            echo ""
+            echo "Digest: \`$digest\`  "
+            echo "Platforms: $platforms"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: GitHub release with the image digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.create.outputs.digest }}
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/gol651-python"
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "GOL651 $GITHUB_REF_NAME" --notes "$(printf '%s\n' \
+            "Course image: \`$repo:$GITHUB_REF_NAME\`" "" \
+            "Digest (exact image tested by the CI on amd64 and arm64): \`$DIGEST\`" "" \
+            "Check your copy: \`docker image inspect $repo:$GITHUB_REF_NAME --format '{{index .RepoDigests 0}}'\`")"
+
+  # ===========================================================================
+  # Release only: the STUDENT path, exactly as in the README (no local build).
+  # ===========================================================================
+  student-path:
+    name: Student path with the published image (${{ matrix.arch }})
+    needs: publish
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download and start, as a student would (anonymous, no build)
+        env:
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          cp .env.example .env                      # defaults only, no COMPOSE_FILE
+          chmod -R a+rwX notebooks python sql data marimo streamlit fastapi flask examples scripts
+          image="$(docker compose config --format json | jq -r '.services.jupyter.image')"
+          # Anonymous download: fails if the package is still private.
+          if ! docker compose pull jupyter; then
+            echo "::error::Cannot download $image anonymously. Make the package public: GitHub > Packages > gol651-python > Package settings > Change visibility > Public. Then re-run this job."
+            exit 1
+          fi
+          test "$(docker image inspect "$image" --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep -c "@$DIGEST")" -ge 1
+          sh scripts/start.sh all
+          docker compose exec -T jupyter python scripts/verify_environment.py
+          docker compose exec -T jupyter python scripts/verify_databases.py
+          docker compose exec -T jupyter python scripts/verify_solvers.py
+          curl -fsS http://127.0.0.1:8501/_stcore/health
+      - name: Clean up
+        if: always()
+        run: docker compose --profile marimo --profile web down -v --remove-orphans || true

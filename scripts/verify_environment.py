@@ -32,7 +32,8 @@ import verify_databases  # noqa: E402  (sibling script)
 import verify_solvers  # noqa: E402  (sibling script)
 
 EXPECTED_PYTHON = (3, 12)
-REBUILD_HINT = "Package missing or broken in the image; rebuild: docker compose build"
+REBUILD_HINT = ("Package missing or broken in the image; download it again: docker compose pull "
+                "(local build: docker compose build)")
 
 
 # --------------------------------------------------------------------------

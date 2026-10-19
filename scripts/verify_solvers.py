@@ -158,7 +158,7 @@ def _check_highspy() -> str:
 def run_checks() -> list[tuple[str, bool, str, str]]:
     results = [
         _run("Pyomo", _check_pyomo,
-             "Pyomo is missing from the image; rebuild: docker compose build"),
+             "Pyomo is missing from the image; download it again: docker compose pull"),
         _run("HiGHS library (highspy)", _check_highspy,
              "highspy is missing; check requirements-lock.txt and rebuild the image"),
     ]

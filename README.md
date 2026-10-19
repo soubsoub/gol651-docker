@@ -34,7 +34,7 @@ Get-ChildItem -Recurse .\scripts\*.ps1 | Unblock-File
 sh scripts/start.sh                  # Windows PowerShell : .\scripts\start.ps1
 ```
 
-La première fois, la construction prend plusieurs minutes. Ensuite, ouvrez **http://localhost:8888** (Jupyter) et vérifiez l'installation :
+La première fois, l'image du cours (prête à l'emploi, environ 1 Go) est téléchargée : comptez quelques minutes. Ensuite, ouvrez **http://localhost:8888** (Jupyter) et vérifiez l'installation :
 
 ```bash
 docker compose exec jupyter python scripts/verify_environment.py
@@ -66,7 +66,7 @@ Tous les services Python utilisent **une seule image Python 3.12**, qui contient
 | **Windows 10/11** | Docker Desktop avec le moteur **WSL2** | Activez la virtualisation dans le BIOS si Docker le demande. Utilisez PowerShell et les scripts `.ps1`. |
 | **macOS Intel** | Docker Desktop | Scripts `.sh` dans le Terminal. |
 | **macOS Apple Silicon (M1–M5)** | Docker Desktop | L'image est **native ARM64** : aucune émulation, n'activez pas Rosetta pour Docker. |
-| **Linux** | Docker Engine + plugin `docker compose` | Réglez `LOCAL_UID`/`LOCAL_GID` dans `.env` (voir section 4). |
+| **Linux** | Docker Engine + plugin `docker compose` | Si `id -u` n'affiche pas 1000 : construction locale (voir section 4). |
 
 Vérifiez votre installation : `docker version` puis `docker compose version`.
 
@@ -75,6 +75,7 @@ Vérifiez votre installation : `docker version` puis `docker compose version`.
 ```text
 gol651-docker/
 ├── docker-compose.yml        services, ports, volumes
+├── docker-compose.build.yml  construction locale de l'image (facultatif)
 ├── .env.example              modèle de configuration (copiez-le en .env)
 ├── docker/python/            image Python commune (Dockerfile)
 ├── requirements/             dépendances Python (requirements.in + verrou uv)
@@ -105,12 +106,13 @@ Les dossiers sont **partagés** entre votre ordinateur et les conteneurs : modif
 Si un port est déjà utilisé sur votre ordinateur, changez seulement la valeur dans `.env` : `MYSQL_PORT`, `PHPMYADMIN_PORT`, `JUPYTER_PORT`, `MARIMO_PORT`, `STREAMLIT_PORT`, `FASTAPI_PORT`, `FLASK_PORT`.
 
 #### Linux seulement
-Pour que les fichiers créés dans les conteneurs vous appartiennent, mettez dans `.env` le résultat de `id -u` et `id -g` :
+L'image téléchargée utilise l'utilisateur 1000. Si `id -u` affiche **1000** (cas habituel), ne changez rien. Sinon, construisez l'image vous-même pour que les fichiers créés dans les conteneurs vous appartiennent. Dans `.env` :
 ```bash
-LOCAL_UID=1000
-LOCAL_GID=1000
+LOCAL_UID=1001                # résultat de: id -u
+LOCAL_GID=1001                # résultat de: id -g
+COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml
 ```
-puis reconstruisez : `docker compose build`. Windows et macOS : laissez les valeurs par défaut.
+puis `docker compose build` (une fois, plusieurs minutes) et `sh scripts/start.sh`. Windows et macOS : laissez les valeurs par défaut.
 
 ### 5. Démarrer et arrêter
 
@@ -123,7 +125,7 @@ puis reconstruisez : `docker compose build`. Windows et macOS : laissez les vale
 | Arrêter (aucune perte) | `sh scripts/stop.sh` | `.\scripts\stop.ps1` | `docker compose --profile marimo --profile web down` |
 | État des services | | | `docker compose ps` |
 
-L'image est construite automatiquement au premier démarrage. **Après une mise à jour du dépôt**, reconstruisez-la une fois : `docker compose build`. Si l'enseignant l'indique (scripts MySQL modifiés), faites aussi une [réinitialisation complète](#14-réinitialiser).
+L'image Python est téléchargée automatiquement au premier démarrage. **Après une mise à jour du dépôt** (`git pull`), démarrez comme d'habitude : si l'enseignant a publié une nouvelle version de l'image, elle est téléchargée une fois. Si l'enseignant l'indique (scripts MySQL modifiés), faites aussi une [réinitialisation complète](#14-réinitialiser).
 
 Si Windows bloque les scripts (« l'exécution de scripts est désactivée ») : faites l'étape « Windows, une seule fois » du démarrage rapide, ou utilisez `powershell -ExecutionPolicy Bypass -File .\scripts\start.ps1`.
 
@@ -260,7 +262,7 @@ Chaque ligne affiche `[PASS]` ou `[FAIL]`, avec une piste de solution en cas d'�
 | Commande | Base MySQL | Fichiers (`data/`, carnets, code) |
 |---|---|---|
 | `stop` / `docker compose down` | **conservée** | conservés |
-| `docker compose build` (reconstruction) | conservée | conservés |
+| `docker compose pull` (nouvelle image) | conservée | conservés |
 | redémarrer l'ordinateur | conservée | conservés |
 | `reset` / `docker compose down -v` | **SUPPRIMÉE puis recréée** | conservés |
 
@@ -287,13 +289,13 @@ Du moins au plus radical :
 |---|---|---|
 | 1. Redémarrer | `docker compose restart` | relance les services, rien n'est perdu |
 | 2. Arrêter | `sh scripts/stop.sh` / `.\scripts\stop.ps1` | supprime les conteneurs, rien n'est perdu |
-| 3. Reconstruire l'image | `docker compose build` puis `sh scripts/start.sh` | après une mise à jour des dépendances ; rien n'est perdu |
+| 3. Télécharger de nouveau l'image | `docker compose pull` puis `sh scripts/start.sh` (construction locale : `docker compose build`) | image abîmée ou incomplète ; rien n'est perdu |
 | 4. Restaurer `gol651_exercises` | `sh scripts/restore-exercises.sh` / `.\scripts\restore-exercises.ps1` | recrée **seulement** la base d'exercice ; `gol651` est intacte |
 | 5. Réinitialisation complète | `sh scripts/reset.sh` / `.\scripts\reset.ps1` | **SUPPRIME toute la base MySQL**, puis la recrée |
 
 > **ATTENTION :** le niveau 5 (`docker compose down -v`) supprime le volume MySQL et toutes ses données. Les scripts demandent de taper `yes`. Les fichiers de `data/sqlite/`, `data/duckdb/`, vos carnets et votre code ne sont pas touchés.
 
-Si une reconstruction semble utiliser un cache corrompu : `docker compose build --no-cache`. N'utilisez `docker system prune` qu'en dernier recours : il supprime les images et caches de **tous** vos projets Docker.
+En construction locale, si le cache semble corrompu : `docker compose build --no-cache`. N'utilisez `docker system prune` qu'en dernier recours : il supprime les images et caches de **tous** vos projets Docker.
 
 ### 15. Dépannage
 
@@ -318,10 +320,11 @@ docker compose logs mysql --tail=50       # ou jupyter, phpmyadmin, streamlit…
 | `mysql` reste `starting` / `unhealthy` | Premier démarrage en cours, ou erreur d'initialisation | Attendez 1–2 min ; sinon `docker compose logs mysql --tail=100`. |
 | Tables d'enseignement absentes (`Table 'gol651.customers' doesn't exist`), ou la vérification indique une ancienne version (`initialized by release 'stage-1'`) | Volume MySQL créé par une ancienne version | [Réinitialisation complète](#14-réinitialiser) (efface MySQL). |
 | `ModuleNotFoundError` | Python lancé sur votre ordinateur au lieu du conteneur | Utilisez `docker compose exec jupyter python …`. |
-| Linux : `Permission denied` dans `notebooks/` ou `data/` | UID/GID différents | Réglez `LOCAL_UID`/`LOCAL_GID` (section 4), `docker compose build`. N'utilisez pas `chmod 777`. |
+| Linux : `Permission denied` dans `notebooks/` ou `data/` | `id -u` différent de 1000 | Construction locale (section 4, « Linux seulement »). N'utilisez pas `chmod 777`. |
 | Windows : `/bin/sh^M: bad interpreter` | Fins de ligne CRLF | `git config --global core.autocrlf input`, puis reclonez le dépôt. |
 | `ERROR 1227 ... SYSTEM_USER privilege` en supprimant ou remplaçant une vue de `gol651_exercises` | Base créée par une version antérieure à 2.3 (vues appartenant à `root`) | `restore-exercises` une fois (efface vos modifications de `gol651_exercises`). Les vues de `gol651` (référence) restent protégées : c'est voulu. |
-| Apple Silicon : `exec format error` | Image d'une autre architecture | `docker compose build --pull`. Ne forcez pas `platform: linux/amd64`. |
+| Apple Silicon : `exec format error` | Image d'une autre architecture | `docker compose pull`. Ne forcez pas `platform: linux/amd64`. |
+| `pull access denied` ou `manifest unknown` pour `ghcr.io/soubsoub/gol651-python` | Pas d'Internet, ou version de l'image pas encore publiée | Vérifiez la connexion, puis `git pull` ; sinon prévenez l'enseignant. |
 
 ### 16. Sécurité
 
@@ -358,7 +361,7 @@ Get-ChildItem -Recurse .\scripts\*.ps1 | Unblock-File
 sh scripts/start.sh                  # Windows PowerShell: .\scripts\start.ps1
 ```
 
-The first build takes several minutes. Then open **http://localhost:8888** (Jupyter) and verify the installation:
+The first time, the ready-made course image (about 1 GB) is downloaded: allow a few minutes. Then open **http://localhost:8888** (Jupyter) and verify the installation:
 
 ```bash
 docker compose exec jupyter python scripts/verify_environment.py
@@ -390,7 +393,7 @@ All Python services use **one Python 3.12 image** containing NumPy, Pandas, SciP
 | **Windows 10/11** | Docker Desktop with the **WSL2** engine | Enable virtualization in the BIOS if Docker asks. Use PowerShell and the `.ps1` scripts. |
 | **macOS Intel** | Docker Desktop | `.sh` scripts in the Terminal. |
 | **macOS Apple Silicon (M1–M5)** | Docker Desktop | The image is **native ARM64**: no emulation; do not enable Rosetta for Docker. |
-| **Linux** | Docker Engine + `docker compose` plugin | Set `LOCAL_UID`/`LOCAL_GID` in `.env` (section 4). |
+| **Linux** | Docker Engine + `docker compose` plugin | If `id -u` does not print 1000: local build (section 4). |
 
 Check your installation: `docker version`, then `docker compose version`.
 
@@ -399,6 +402,7 @@ Check your installation: `docker version`, then `docker compose version`.
 ```text
 gol651-docker/
 ├── docker-compose.yml        services, ports, volumes
+├── docker-compose.build.yml  local build of the image (optional)
 ├── .env.example              configuration template (copy it to .env)
 ├── docker/python/            shared Python image (Dockerfile)
 ├── requirements/             Python dependencies (requirements.in + uv lock)
@@ -429,12 +433,13 @@ Folders are **shared** between your computer and the containers: edit a file in 
 If a port is already used on your computer, change only its value in `.env`: `MYSQL_PORT`, `PHPMYADMIN_PORT`, `JUPYTER_PORT`, `MARIMO_PORT`, `STREAMLIT_PORT`, `FASTAPI_PORT`, `FLASK_PORT`.
 
 #### Linux only
-So that files created in containers belong to you, put the output of `id -u` and `id -g` in `.env`:
+The downloaded image uses user 1000. If `id -u` prints **1000** (the usual case), change nothing. Otherwise, build the image yourself so that files created in containers belong to you. In `.env`:
 ```bash
-LOCAL_UID=1000
-LOCAL_GID=1000
+LOCAL_UID=1001                # output of: id -u
+LOCAL_GID=1001                # output of: id -g
+COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml
 ```
-then rebuild: `docker compose build`. Windows and macOS: keep the defaults.
+then `docker compose build` (once, several minutes) and `sh scripts/start.sh`. Windows and macOS: keep the defaults.
 
 ### 5. Start and stop
 
@@ -447,7 +452,7 @@ then rebuild: `docker compose build`. Windows and macOS: keep the defaults.
 | Stop (no data loss) | `sh scripts/stop.sh` | `.\scripts\stop.ps1` | `docker compose --profile marimo --profile web down` |
 | Service status | | | `docker compose ps` |
 
-The image is built automatically on the first start. **After updating the repository**, rebuild it once: `docker compose build`. If the instructor says so (MySQL scripts changed), also do a [full reset](#14-reset).
+The Python image is downloaded automatically on the first start. **After updating the repository** (`git pull`), start as usual: if the instructor published a new version of the image, it is downloaded once. If the instructor says so (MySQL scripts changed), also do a [full reset](#14-reset).
 
 If Windows blocks scripts ("running scripts is disabled on this system"): do the "Windows, once only" step of the quick start, or use `powershell -ExecutionPolicy Bypass -File .\scripts\start.ps1`.
 
@@ -584,7 +589,7 @@ Each line shows `[PASS]` or `[FAIL]`, with a hint when something fails.
 | Command | MySQL database | Files (`data/`, notebooks, code) |
 |---|---|---|
 | `stop` / `docker compose down` | **kept** | kept |
-| `docker compose build` (rebuild) | kept | kept |
+| `docker compose pull` (new image) | kept | kept |
 | restarting the computer | kept | kept |
 | `reset` / `docker compose down -v` | **DELETED, then recreated** | kept |
 
@@ -611,13 +616,13 @@ From the least to the most drastic:
 |---|---|---|
 | 1. Restart | `docker compose restart` | restarts services, nothing is lost |
 | 2. Stop | `sh scripts/stop.sh` / `.\scripts\stop.ps1` | removes containers, nothing is lost |
-| 3. Rebuild the image | `docker compose build`, then `sh scripts/start.sh` | after a dependency update; nothing is lost |
+| 3. Download the image again | `docker compose pull`, then `sh scripts/start.sh` (local build: `docker compose build`) | damaged or incomplete image; nothing is lost |
 | 4. Restore `gol651_exercises` | `sh scripts/restore-exercises.sh` / `.\scripts\restore-exercises.ps1` | recreates **only** the practice database; `gol651` is untouched |
 | 5. Full reset | `sh scripts/reset.sh` / `.\scripts\reset.ps1` | **DELETES the whole MySQL database**, then recreates it |
 
 > **WARNING:** level 5 (`docker compose down -v`) deletes the MySQL volume and all its data. The scripts ask you to type `yes`. Files in `data/sqlite/`, `data/duckdb/`, your notebooks and your code are not affected.
 
-If a rebuild seems to use a corrupted cache: `docker compose build --no-cache`. Use `docker system prune` only as a last resort: it removes images and caches of **all** your Docker projects.
+With a local build, if the cache seems corrupted: `docker compose build --no-cache`. Use `docker system prune` only as a last resort: it removes images and caches of **all** your Docker projects.
 
 ### 15. Troubleshooting
 
@@ -642,10 +647,11 @@ docker compose logs mysql --tail=50       # or jupyter, phpmyadmin, streamlit…
 | `mysql` stays `starting` / `unhealthy` | First start still running, or an initialization error | Wait 1–2 min; otherwise `docker compose logs mysql --tail=100`. |
 | Teaching tables missing (`Table 'gol651.customers' doesn't exist`), or verification reports an older release (`initialized by release 'stage-1'`) | MySQL volume created by an older version | [Full reset](#14-reset) (erases MySQL). |
 | `ModuleNotFoundError` | Python started on your computer instead of the container | Use `docker compose exec jupyter python …`. |
-| Linux: `Permission denied` in `notebooks/` or `data/` | Different UID/GID | Set `LOCAL_UID`/`LOCAL_GID` (section 4), `docker compose build`. Do not use `chmod 777`. |
+| Linux: `Permission denied` in `notebooks/` or `data/` | `id -u` is not 1000 | Local build (section 4, "Linux only"). Do not use `chmod 777`. |
 | Windows: `/bin/sh^M: bad interpreter` | CRLF line endings | `git config --global core.autocrlf input`, then clone the repository again. |
 | `ERROR 1227 ... SYSTEM_USER privilege` when dropping or replacing a view in `gol651_exercises` | Database created by a version older than 2.3 (views owned by `root`) | Run `restore-exercises` once (erases your changes to `gol651_exercises`). Views in `gol651` (reference) stay protected on purpose. |
-| Apple Silicon: `exec format error` | Image from another architecture | `docker compose build --pull`. Do not force `platform: linux/amd64`. |
+| Apple Silicon: `exec format error` | Image from another architecture | `docker compose pull`. Do not force `platform: linux/amd64`. |
+| `pull access denied` or `manifest unknown` for `ghcr.io/soubsoub/gol651-python` | No Internet, or image version not published yet | Check the connection, then `git pull`; otherwise tell the instructor. |
 
 ### 16. Security
 
@@ -733,22 +739,34 @@ Vues / *Views*: `v_order_totals` (total par commande / *total per order*), `v_cu
 |---|---|
 | Stage 1 infrastructure on Docker Desktop | Verified locally on **Windows** and **macOS Intel** (amd64): `verify_environment.py` 40/40 |
 | Stage 2 content (schema, examples, notebooks, apps, scripts) | Image built and run on **Windows**: 40/42 environment checks passed; the 2 failures came from a Stage 1 MySQL volume (one-time reset). Also executed outside Docker against MySQL 8.0 and the locked packages |
-| GitHub Actions CI (amd64 + arm64) | **Not run yet** — required before distribution to students |
+| Stage 2.3 (practice views owned by the course user) | **VERIFIED BY CI** on amd64 and arm64 (run 39195567624) |
+| Stage 2.4 (ready-made image on GHCR, local build as an option) | Compose merge checked statically; CI build path to be confirmed by the next push; release path (publish + student path) runs on the first tag `v1.0.0` |
 
 A release is **VERIFIED** only when the CI "Verdict" job reports success on both amd64 and arm64.
 
 ### Continuous integration
-`.github/workflows/ci.yml` is the execution mechanism for verification. On every push to `main`, every pull request and on manual dispatch, it builds and runs the stack **natively** on `ubuntu-24.04` (amd64) and `ubuntu-24.04-arm` (arm64): Compose validation and script syntax, native build, health checks, HTTP probes of every service, MySQL from the host (Workbench path), non-root file ownership, the four `verify_*.py` scripts (including every example, notebook and app), MySQL persistence across `down`/`up`, both profiles, and the student wrapper scripts (stop, start, restore-exercises, reset). This repository is public, so standard GitHub-hosted runners (including arm64) are free; a private copy would consume the account's Actions minutes.
+`.github/workflows/ci.yml` is the execution mechanism for verification. On every push to `main`, every pull request, every release tag and on manual dispatch, it builds and runs the stack **natively** on `ubuntu-24.04` (amd64) and `ubuntu-24.04-arm` (arm64): Compose validation and script syntax, native build, health checks, HTTP probes of every service, MySQL from the host (Workbench path), non-root file ownership, the four `verify_*.py` scripts (including every example, notebook and app), MySQL persistence across `down`/`up`, both profiles, and the student wrapper scripts (stop, start, restore-exercises, reset). This repository is public, so standard GitHub-hosted runners (including arm64) are free; a private copy would consume the account's Actions minutes.
 
 ### Teaching schema
 Source of truth: `mysql/init/teaching/01_schema.sql`, `02_data.sql`, `03_views.sql`. `mysql/init/02_teaching_schema.sh` loads them into both databases on first start (it works whether the MySQL image sources or executes it). The SQL files are idempotent and contain no `USE` statement. After changing them, update `TEACHING_ROWS` in `scripts/verify_databases.py` and the counts checked in `ci.yml`, then reset the volume.
 
+### Course image and releases
+Students download `ghcr.io/soubsoub/gol651-python:vX.Y.Z`; the tag is written in `docker-compose.yml` (`x-python-service`). The CI always builds the image itself (`docker-compose.build.yml`, enabled through `COMPOSE_FILE` in `.env`).
+
+To publish a release:
+1. Set the new tag in `docker-compose.yml`, e.g. `ghcr.io/soubsoub/gol651-python:v1.0.1`, commit, push to `main`, and wait for a green Verdict.
+2. `git tag v1.0.1` then `git push origin v1.0.1`.
+3. The CI rebuilds and re-tests on amd64 and arm64, pushes **the tested images**, combines them into one multi-architecture tag, creates a GitHub release containing the image digest, then runs the student path (anonymous download, no build) on both architectures.
+4. **First release only:** GitHub > your profile > Packages > `gol651-python` > Package settings > Change visibility > **Public**, then re-run the failed "Student path" jobs.
+
+Rules: a published tag is never overwritten (the CI refuses); fix a problem with a new patch version. Use semantic versions `vMAJOR.MINOR.PATCH`. Staging tags `ci-<commit>-amd64/arm64` in the package are intermediate steps and can be deleted after the release.
+
 ### Dependencies
-Edit `requirements/requirements.in`, regenerate the lock with [uv](https://docs.astral.sh/uv/), then rebuild:
+Edit `requirements/requirements.in`, regenerate the lock with [uv](https://docs.astral.sh/uv/), then rebuild locally and publish a new release:
 ```bash
 uv pip compile requirements/requirements.in \
   --universal --python-version 3.12 \
   -o requirements/requirements-lock.txt
-docker compose build
+docker compose -f docker-compose.yml -f docker-compose.build.yml build
 ```
 The image installs **only** `requirements-lock.txt`. Change dependencies between semesters, not during one, and let CI pass on both architectures before release. Pinned images: `python:3.12-slim-trixie`, `mysql:8.4`, `phpmyadmin:5.2`, `ghcr.io/astral-sh/uv:0.11.32` (pin image digests if bit-for-bit reproducibility becomes necessary).

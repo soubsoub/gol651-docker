@@ -11,8 +11,8 @@ Usage (PowerShell, from the project folder):
 If Windows blocks scripts:
   powershell -ExecutionPolicy Bypass -File .\scripts\start.ps1
 Equivalent manual command:  docker compose [--profile ...] up -d --wait
-The image is built automatically on the first start. After updating the
-repository, rebuild it once with:  docker compose build
+The Python image is downloaded automatically on the first start, and again
+(once) after a git pull that changes the course release.
 =============================================================================
 #>
 param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Options = @())

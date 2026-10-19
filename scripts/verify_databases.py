@@ -398,7 +398,8 @@ def run_checks() -> list[tuple[str, bool, str, str]]:
     )
     write_hint = (
         "The data/ folder must be writable by the container user. On Linux, set "
-        "LOCAL_UID/LOCAL_GID in .env to the output of 'id -u' / 'id -g' and rebuild."
+        "LOCAL_UID/LOCAL_GID in .env to the output of 'id -u' / 'id -g', enable the "
+        "COMPOSE_FILE line of .env (local build) and run: docker compose build."
     )
     return [
         _run("SQLite (file, transactions)", _check_sqlite_file, write_hint),
@@ -406,10 +407,10 @@ def run_checks() -> list[tuple[str, bool, str, str]]:
              "sqlite3 must be installed by the Dockerfile; " + IN_CONTAINER_HINT),
         _run("SQLite via SQLAlchemy + Pandas", _check_sqlite_sqlalchemy_pandas, write_hint),
         _run("DuckDB (in-memory, Pandas)", _check_duckdb_memory,
-             "duckdb is missing; rebuild the image: docker compose build"),
+             "duckdb is missing; download the image again: docker compose pull"),
         _run("DuckDB (persistent file)", _check_duckdb_file, write_hint),
         _run("DuckDB via SQLAlchemy (duckdb-engine)", _check_duckdb_sqlalchemy,
-             "duckdb-engine is missing; rebuild the image: docker compose build"),
+             "duckdb-engine is missing; download the image again: docker compose pull"),
         _run("MySQL (PyMySQL)", _check_mysql_pymysql, mysql_hint),
         _run("MySQL initialization", _check_mysql_init,
              "Init scripts in mysql/init/ run only on an EMPTY volume. After updating "

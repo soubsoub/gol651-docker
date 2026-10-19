@@ -1,0 +1,39 @@
+# =============================================================================
+# GOL651 - LOCAL BUILD of the Python image (override file)
+# =============================================================================
+# Normal use does NOT need this file: docker-compose.yml downloads the
+# ready-made course image. Use it only to build the image yourself:
+#   - Linux, when "id -u" is not 1000 (files in data/ or notebooks/ not
+#     writable), together with LOCAL_UID / LOCAL_GID in .env;
+#   - instructor work on the Dockerfile or the dependencies;
+#   - the CI, which tests this path on every push.
+#
+# Enable it ONCE by adding this line to .env (Linux / macOS):
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.build.yml
+# Every docker compose command and every script then builds locally:
+#   docker compose build          (first time, and after a dependency change)
+#   sh scripts/start.sh
+# Remove the line from .env to go back to the downloaded image.
+# =============================================================================
+
+x-local-image: &local-image
+  image: gol651-python:local
+  pull_policy: never           # built below by the jupyter service
+
+services:
+  jupyter:
+    image: gol651-python:local
+    build:
+      context: .
+      dockerfile: docker/python/Dockerfile
+      args:
+        LOCAL_UID: ${LOCAL_UID:-1000}
+        LOCAL_GID: ${LOCAL_GID:-1000}
+  marimo:
+    <<: *local-image
+  streamlit:
+    <<: *local-image
+  fastapi:
+    <<: *local-image
+  flask:
+    <<: *local-image

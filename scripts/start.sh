@@ -9,8 +9,8 @@
 #   sh scripts/start.sh marimo web   + both
 #   sh scripts/start.sh all          everything
 # Equivalent manual command:  docker compose [--profile ...] up -d --wait
-# The image is built automatically on the first start. After updating the
-# repository, rebuild it once with:  docker compose build
+# The Python image is downloaded automatically on the first start, and again
+# (once) after a git pull that changes the course release.
 # =============================================================================
 set -eu
 cd "$(dirname "$0")/.."
