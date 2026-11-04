@@ -72,6 +72,18 @@ pages = {
         st.Page("page_optimization.py", title="Optimisation / Optimization",
                 icon=":material/insights:"),
     ],
+    "Laboratoire Pyomo / Lab": [
+        st.Page("pages/lab_02_production.py", title="2. Production LP",
+                icon=":material/factory:"),
+        st.Page("pages/lab_03_transport.py", title="3. Transport",
+                icon=":material/local_shipping:"),
+        st.Page("pages/lab_04_affectation.py", title="4. Affectation",
+                icon=":material/assignment_ind:"),
+        st.Page("pages/lab_05_reseau.py", title="5. Flot en réseau",
+                icon=":material/hub:"),
+        st.Page("pages/lab_06_planification.py", title="6. Planification",
+                icon=":material/calendar_month:"),
+    ],
 }
 
 st.navigation(pages).run()

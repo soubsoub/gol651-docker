@@ -47,6 +47,7 @@ x-python-service: &python-service
     - ./flask:/workspace/flask
     - ./examples:/workspace/examples
     - ./scripts:/workspace/scripts
+    - ./lab:/workspace/lab
   depends_on:
     mysql:
       condition: service_healthy
